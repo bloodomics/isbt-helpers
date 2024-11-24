@@ -4,6 +4,7 @@ import requests
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
 import concurrent.futures
+import re
 
 
 # Define function to generate args
@@ -83,6 +84,7 @@ def export_allele_tables(system, lead_url, session, output_dir):
             "variants",
             "genbanks",
             "publications",
+            "gene",
         ]
     ]
 
@@ -106,7 +108,6 @@ def export_allele_tables(system, lead_url, session, output_dir):
 
     # Get variant from each row
     for idx, row in allele_df.iterrows():
-
         # Get the variants
         variants = row["variants"]
 
@@ -118,6 +119,18 @@ def export_allele_tables(system, lead_url, session, output_dir):
 
         # If there are variants
         if len(variants) > 0:
+
+            # First sort variants by hgvs_transcript - NM_017436.7:c.[-188]+3010G>T
+            try:
+                variants = sorted(
+                    variants,
+                    key=lambda x: float(
+                        re.search(r"c\.(-?\d+)", x["hgvs_transcript"]).group(1)
+                    ),
+                )
+            except:
+                pass
+
             for variant in variants:
 
                 # Get the variant transcript
@@ -165,6 +178,12 @@ def export_allele_tables(system, lead_url, session, output_dir):
         pub_list = []
         # Check if publication is None/NA
         if publication is not None:
+            # Sort publications by type PMID before Abstract, then alphanumeric
+            publication = sorted(
+                publication,
+                key=lambda x: (x.get("type", "-"), x.get("identifier", "-")),
+            )
+
             for pub in publication:
                 try:
                     if pub is not None:
@@ -189,9 +208,13 @@ def export_allele_tables(system, lead_url, session, output_dir):
     # For Genbanks
     genbanks = []
     for genbank in allele_df["genbanks"]:
+
         gb_list = []
         # Check if genbank is None/NA
         if genbank is not None:
+            # Sort genbanks by accession number
+            genbank = sorted(genbank, key=lambda x: x.get("accession", "-"))
+
             for gb in genbank:
                 try:
                     if gb is not None:
@@ -207,12 +230,23 @@ def export_allele_tables(system, lead_url, session, output_dir):
     # Add to the dataframe
     allele_df["genbanks"] = genbanks
 
+    # Replace gene column with gene name if available
+    gene_names = []
+    for gene in allele_df["gene"]:
+        try:
+            gene_names.append(gene["name"])
+        except:
+            gene_names.append("-")
+
+    allele_df["gene"] = gene_names
+
     # Order the columns
     allele_df = allele_df[
         [
             "id",
             "isbt_phenotype",
             "isbt_allele",
+            "gene",
             "alternate_names",
             "reference_allele",
             "protein_variant",
@@ -314,19 +348,22 @@ def main():
     # Print number of systems
     print(f"Found {len(systems)} systems")
 
-    # Do in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = [
-            executor.submit(
-                export_allele_tables, system, args.lead_url, session, output_dir
-            )
-            for system in systems
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()
-            except Exception as exc:
-                print(f"Generated an exception: {exc}")
+    # Try just for KEL
+    export_allele_tables("KEL", args.lead_url, session, output_dir)
+
+    # # Do in parallel
+    # with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
+    #     futures = [
+    #         executor.submit(
+    #             export_allele_tables, system, args.lead_url, session, output_dir
+    #         )
+    #         for system in systems
+    #     ]
+    #     for future in concurrent.futures.as_completed(futures):
+    #         try:
+    #             future.result()
+    #         except Exception as exc:
+    #             print(f"Generated an exception: {exc}")
 
 
 if __name__ == "__main__":
