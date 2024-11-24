@@ -349,21 +349,21 @@ def main():
     print(f"Found {len(systems)} systems")
 
     # Try just for KEL
-    export_allele_tables("KEL", args.lead_url, session, output_dir)
+    # export_allele_tables("KEL", args.lead_url, session, output_dir)
 
-    # # Do in parallel
-    # with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
-    #     futures = [
-    #         executor.submit(
-    #             export_allele_tables, system, args.lead_url, session, output_dir
-    #         )
-    #         for system in systems
-    #     ]
-    #     for future in concurrent.futures.as_completed(futures):
-    #         try:
-    #             future.result()
-    #         except Exception as exc:
-    #             print(f"Generated an exception: {exc}")
+    # Do in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
+        futures = [
+            executor.submit(
+                export_allele_tables, system, args.lead_url, session, output_dir
+            )
+            for system in systems
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                future.result()
+            except Exception as exc:
+                print(f"Generated an exception: {exc}")
 
 
 if __name__ == "__main__":
