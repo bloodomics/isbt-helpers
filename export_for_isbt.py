@@ -6,6 +6,10 @@ from openpyxl.styles import Alignment
 import concurrent.futures
 import re
 
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 
 # Define function to generate args
 def generate_args():
@@ -16,6 +20,10 @@ def generate_args():
     parser.add_argument("--output", type=str, required=True, help="Output directory")
     parser.add_argument(
         "--threads", type=int, default=1, help="Number of threads to use"
+    )
+    # Add argument for specific system
+    parser.add_argument(
+        "--system", type=str, default=None, help="Specific system to export"
     )
 
     return parser.parse_args()
@@ -399,27 +407,30 @@ def main():
     # Creat a session with the lead URL
     session = requests.Session()
 
-    # Get list of systems
-    systems = get_system_list(args.lead_url, session)
-    # Print number of systems
-    print(f"Found {len(systems)} systems")
+    # if system is not None then only export for that system
+    if args.system is not None:
+        export_allele_tables(args.system, args.lead_url, session, output_dir)
+        return
+    else:
+        systems = get_system_list(args.lead_url, session)
+        # Print number of systems
+        print(f"Found {len(systems)} systems")
 
-    # Try just for KEL
-    export_allele_tables("FY", args.lead_url, session, output_dir)
-
-    # Do in parallel
-    # with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
-    #     futures = [
-    #         executor.submit(
-    #             export_allele_tables, system, args.lead_url, session, output_dir
-    #         )
-    #         for system in systems
-    #     ]
-    #     for future in concurrent.futures.as_completed(futures):
-    #         try:
-    #             future.result()
-    #         except Exception as exc:
-    #             print(f"Generated an exception: {exc}")
+        # Do in parallel
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=args.threads
+        ) as executor:
+            futures = [
+                executor.submit(
+                    export_allele_tables, system, args.lead_url, session, output_dir
+                )
+                for system in systems
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    print(f"Generated an exception: {exc}")
 
 
 if __name__ == "__main__":
