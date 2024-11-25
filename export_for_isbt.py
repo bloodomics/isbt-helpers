@@ -299,10 +299,27 @@ def export_allele_tables(system, lead_url, session, output_dir):
     # Rename columns
     allele_df.rename(
         columns={
-            "id": "database_stable_id",
+            "id": "Database ID",
             "isbt_phenotype": "Phenotype",
             "isbt_allele": "ISBT Allele",
             "alternate_names": "Alternate Names",
+            "reference_allele": "Reference Allele",
+            "variant": "DNA change",
+            "exon_intron": "Exon/Intron",
+            "protein_variant": "Protein change",
+            "genomic_variant": "Genomic Variant",
+            "rsid": "RSID",
+            "gene": "Gene",
+            "genbanks": "GenBank",
+            "publications": "Publications",
+            "sv_allele": "Structural Variant Allele",
+            "null_allele": "Null Allele",
+            "mod_allele": "Modified Allele",
+            "partial_allele": "Partial Allele",
+            "weak_allele": "Weak Allele",
+            "el_allele": "Elution Allele",
+            "notes": "Annotation Notes",
+            "comment": "Comments",
         },
         inplace=True,
     )
