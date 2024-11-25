@@ -285,12 +285,12 @@ def export_allele_tables(system, lead_url, session, output_dir):
             "gene",
             "genbanks",
             "publications",
-            "sv_allele",
             "null_allele",
             "mod_allele",
             "partial_allele",
             "weak_allele",
             "el_allele",
+            "sv_allele",
             "notes",
             "comment",
         ]
