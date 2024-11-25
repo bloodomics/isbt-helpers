@@ -101,10 +101,12 @@ def export_allele_tables(system, lead_url, session, output_dir):
     ]
 
     # Replace True with 1 and False with 0
-    allele_df[bool_cols] = allele_df[bool_cols].replace({True: 1, False: 0})
+    allele_df[bool_cols] = (
+        allele_df[bool_cols].replace({True: 1, False: 0}).infer_objects(copy=False)
+    )
 
     # Replace NA with 0
-    allele_df[bool_cols] = allele_df[bool_cols].fillna(0)
+    allele_df[bool_cols] = allele_df[bool_cols].fillna(0).infer_objects(copy=False)
 
     # Get variant from each row
     for idx, row in allele_df.iterrows():
@@ -116,6 +118,8 @@ def export_allele_tables(system, lead_url, session, output_dir):
         p_list = []
         r_list = []
         chromosomal_list = []
+        #! COLLECT EXONS HERE
+        exon_intron_list = []
 
         # If there are variants
         if len(variants) > 0:
@@ -145,6 +149,9 @@ def export_allele_tables(system, lead_url, session, output_dir):
                 # Get hgvs_genomic_grch38
                 variant_genomic = variant["hgvs_genomic_grch38"]
 
+                # Get the exon intron
+                exon_intron = variant["exon"]
+
                 # if any are "" or NA then replace with "-"
                 if variant_name == "":
                     variant_name = "-"
@@ -160,17 +167,29 @@ def export_allele_tables(system, lead_url, session, output_dir):
                 p_list.append(variant_protein)
                 r_list.append(variant_rsid)
                 chromosomal_list.append(variant_genomic)
+                exon_intron_list.append(exon_intron)
 
         v_list = [str(x) if pd.notna(x) else "-" for x in v_list]
         p_list = [str(x) if pd.notna(x) else "-" for x in p_list]
         r_list = [str(x) if pd.notna(x) else "-" for x in r_list]
         chromosomal_list = [str(x) if pd.notna(x) else "-" for x in chromosomal_list]
+        exon_intron_list = [str(x) if pd.notna(x) else "-" for x in exon_intron_list]
+
+        # For each string in v_list and p_list split on ":" if in there and take the second element
+        for i in range(len(v_list)):
+            if ":" in v_list[i]:
+                v_list[i] = v_list[i].split(":")[1]
+
+        for i in range(len(p_list)):
+            if ":" in p_list[i]:
+                p_list[i] = p_list[i].split(":")[1]
 
         # Add to the dataframe
         allele_df.loc[idx, "variant"] = "\n".join(v_list)
         allele_df.loc[idx, "protein_variant"] = "\n".join(p_list)
         allele_df.loc[idx, "rsid"] = "\n".join(r_list)
         allele_df.loc[idx, "genomic_variant"] = "\n".join(chromosomal_list)
+        allele_df.loc[idx, "exon_intron"] = "\n".join(exon_intron_list)
 
     # For publications
     pubs = []
@@ -191,7 +210,12 @@ def export_allele_tables(system, lead_url, session, output_dir):
                         if pub.get("type") == "pmid":
                             identifier = pub.get("identifier", "-")
                             pub_list.append(f"PMID:{identifier}")
-                        # Else get the reference
+                        # If type is abstract, get the identifier and the citation
+                        elif pub.get("type") == "abstract":
+                            identifier = pub.get("identifier", "-")
+                            citation = pub.get("citation", "-")
+                            pub_list.append(f"{identifier}: {citation}")
+                        # For all other types
                         else:
                             citation = pub.get("citation", "-")
                             pub_list.append(citation)
@@ -230,6 +254,11 @@ def export_allele_tables(system, lead_url, session, output_dir):
     # Add to the dataframe
     allele_df["genbanks"] = genbanks
 
+    # For alternative names, join the lists with ;
+    allele_df["alternate_names"] = allele_df["alternate_names"].apply(
+        lambda x: ";".join(x) if x else "-"
+    )
+
     # Replace gene column with gene name if available
     gene_names = []
     for gene in allele_df["gene"]:
@@ -246,12 +275,14 @@ def export_allele_tables(system, lead_url, session, output_dir):
             "id",
             "isbt_phenotype",
             "isbt_allele",
-            "gene",
             "alternate_names",
             "reference_allele",
+            "variant",
+            "exon_intron",
             "protein_variant",
             "genomic_variant",
             "rsid",
+            "gene",
             "genbanks",
             "publications",
             "sv_allele",
@@ -265,8 +296,16 @@ def export_allele_tables(system, lead_url, session, output_dir):
         ]
     ]
 
-    # Rename id to database_stable_id
-    allele_df.rename(columns={"id": "database_stable_id"}, inplace=True)
+    # Rename columns
+    allele_df.rename(
+        columns={
+            "id": "database_stable_id",
+            "isbt_phenotype": "Phenotype",
+            "isbt_allele": "ISBT Allele",
+            "alternate_names": "Alternate Names",
+        },
+        inplace=True,
+    )
 
     # Save to Excel with auto-adjusted columns, rows, and text wrapping
     with pd.ExcelWriter(f"{output_dir}/{system}.xlsx", engine="openpyxl") as writer:
@@ -349,21 +388,21 @@ def main():
     print(f"Found {len(systems)} systems")
 
     # Try just for KEL
-    # export_allele_tables("KEL", args.lead_url, session, output_dir)
+    export_allele_tables("FY", args.lead_url, session, output_dir)
 
     # Do in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = [
-            executor.submit(
-                export_allele_tables, system, args.lead_url, session, output_dir
-            )
-            for system in systems
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()
-            except Exception as exc:
-                print(f"Generated an exception: {exc}")
+    # with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
+    #     futures = [
+    #         executor.submit(
+    #             export_allele_tables, system, args.lead_url, session, output_dir
+    #         )
+    #         for system in systems
+    #     ]
+    #     for future in concurrent.futures.as_completed(futures):
+    #         try:
+    #             future.result()
+    #         except Exception as exc:
+    #             print(f"Generated an exception: {exc}")
 
 
 if __name__ == "__main__":
