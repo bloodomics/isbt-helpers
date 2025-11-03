@@ -1,14 +1,27 @@
+"""
+Script to annotate variants with rsIDs from dbSNP.
+
+This script:
+1. Fetches variants from the blood group database
+2. Queries dbSNP/Ensembl API for rsIDs
+3. Updates the database with PATCH requests
+
+Author: Nick Gleadall
+Date: October 2025
+"""
+
 import requests
 import json
 import pandas as pd
 import time
 import logging
+import argparse
 from functools import wraps
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -244,20 +257,89 @@ def annotate_rsid(row, get_rsid_func, lead_url, session):
 
 
 if __name__ == "__main__":
-    # Main execution block
-    lead_url = input("Enter the base URL of the API: ")
-    email = input("Enter your email: ")
-    password = input("Enter your password: ")
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description='Annotate variants with rsIDs from dbSNP',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Use config.json file (default)
+  python annotate_rsid.py
+  
+  # Specify config file
+  python annotate_rsid.py --config my_config.json
+  
+  # Specify credentials directly
+  python annotate_rsid.py --url https://api.blooddatabase.org --email user@example.com --password mypass
+        """
+    )
+    parser.add_argument(
+        '--config',
+        default='config.json',
+        help='Path to configuration JSON file (default: config.json)'
+    )
+    parser.add_argument(
+        '--url',
+        help='Base URL of the API (overrides config file)'
+    )
+    parser.add_argument(
+        '--email',
+        help='Email for authentication (overrides config file)'
+    )
+    parser.add_argument(
+        '--password',
+        help='Password for authentication (overrides config file)'
+    )
+    
+    args = parser.parse_args()
+    
+    # Load configuration
+    if args.url and args.email and args.password:
+        # Use command-line arguments
+        lead_url = args.url
+        email = args.email
+        password = args.password
+        logger.info("Using credentials from command-line arguments")
+    else:
+        # Load from config file
+        try:
+            with open(args.config) as f:
+                config = json.load(f)
+            
+            lead_url = args.url or config['lead_url']
+            email = args.email or config['email']
+            password = args.password or config['password']
+            logger.info(f"Loaded configuration from {args.config}")
+        except FileNotFoundError:
+            logger.error(f"Config file '{args.config}' not found.")
+            logger.error("Either provide --config with a valid file, or use --url, --email, and --password")
+            raise
+        except KeyError as e:
+            logger.error(f"Missing required configuration key: {e}")
+            raise
 
     try:
+        logger.info("Starting rsID annotation process")
+        
         # Login and get authenticated session
         session = login(lead_url, email, password)
 
         # Fetch all variants
         variants = get_variants(session=session)
+        logger.info(f"Fetched {len(variants)} variants from database")
 
         # Process each variant
+        logger.info("=" * 80)
+        logger.info("BEGINNING RSID ANNOTATION")
+        logger.info("=" * 80)
+        
         for _, row in variants.iterrows():
             annotate_rsid(row, get_rsid, lead_url, session)
+        
+        logger.info("=" * 80)
+        logger.info("ANNOTATION COMPLETE")
+        logger.info("=" * 80)
+        
     except Exception as e:
-        logger.error(f"Error in main process: {str(e)}")
+        logger.error(f"Fatal error in main process: {str(e)}")
+        raise
