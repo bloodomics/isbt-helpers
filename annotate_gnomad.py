@@ -49,10 +49,11 @@ def login(lead_url, email, password):
             logger.error(f"Response content: {login_response.text}")
         raise
 
-def get_variants(session=None):
+def get_variants(lead_url, session):
     """
     Fetch all variants from the blood group database.
 
+    :param lead_url: Base URL of the API
     :param session: Requests session object
     :return: Pandas DataFrame containing all variants
     """
@@ -86,7 +87,7 @@ def calculate_maf(af):
     return af if af <= 0.5 else (1 - af)
 
 
-def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, overwrite_all=False):
+def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, overwrite_all=False, clear_not_found=False):
     """
     Fetch gnomAD v4 frequencies for variants using GRCh38 coordinates and update the database.
     
@@ -102,6 +103,7 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
     :param lead_url: Base URL of the API
     :param test_mode: If True, logs what would be updated without making PATCH requests
     :param overwrite_all: If True, updates all variants even if they have existing gnomAD data
+    :param clear_not_found: If True, clear existing gnomAD data when not found in gnomAD (only with overwrite_all)
     :return: Pandas DataFrame (unchanged)
     """
     # gnomAD v4 superpopulation codes
@@ -120,12 +122,20 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
     updated_count = 0
     skipped_count = 0
     not_found_count = 0
+    cleared_count = 0
     processed_count = 0
 
+    total_variants = len(variants)
+    
     for index, row in variants.iterrows():
+        processed_count += 1
+        db_variant_id = row.get('id')
+        
+        logger.info(f"[{processed_count}/{total_variants}] Processing variant {db_variant_id}")
+        
         # Check if variant already has gnomAD frequencies (unless overwrite_all is True)
         if not overwrite_all and pd.notna(row.get('gnomad_all')):
-            logger.info(f"Variant {row.get('id')} already has gnomAD frequencies, skipping")
+            logger.info(f"  → Already has gnomAD frequencies, skipping")
             skipped_count += 1
             continue
         
@@ -134,11 +144,10 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
         pos = row.get('grch38_pos')
         ref = row.get('grch38_ref')
         alt = row.get('grch38_alt')
-        db_variant_id = row.get('id')  # Database ID for PATCH request
         
         # Skip if any required field is missing
         if pd.isna(chrom) or pd.isna(pos) or pd.isna(ref) or pd.isna(alt):
-            logger.warning(f"Missing GRCh38 coordinates for variant {db_variant_id}, skipping")
+            logger.warning(f"  → Missing GRCh38 coordinates, skipping")
             skipped_count += 1
             continue
 
@@ -170,41 +179,83 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
             "datasetId": "gnomad_r4"
         }
         
-        logger.info(f"Fetching gnomAD frequency for variant: {gnomad_variant_id}")
+        logger.info(f"  → Querying gnomAD API: {gnomad_variant_id}")
 
         try:
             response = requests.post(
                 gnomad_api_url,
                 json={"query": query, "variables": variables},
-                headers={"Content-Type": "application/json"}
+                headers={"Content-Type": "application/json"},
+                timeout=30  # Add 30 second timeout
             )
             response.raise_for_status()
             data = response.json()
             
             # Check for GraphQL errors
             if 'errors' in data:
-                logger.error(f"GraphQL errors for {gnomad_variant_id}: {data['errors']}")
+                logger.info(f"  → Not found in gnomAD (GraphQL error)")
                 not_found_count += 1
+                
+                # Clear existing gnomAD data if clear_not_found flag is set
+                if clear_not_found and overwrite_all and pd.notna(row.get('gnomad_all')):
+                    logger.info(f"  → Clearing existing gnomAD frequencies")
+                    if not test_mode:
+                        update_url = f"{lead_url}/variant/{db_variant_id}"
+                        clear_data = {pop: None for pop in gnomad_populations}
+                        update_response = session.patch(update_url, json=clear_data)
+                        update_response.raise_for_status()
+                        logger.info(f"  ✓ Cleared gnomAD data in database")
+                        cleared_count += 1
+                    else:
+                        logger.info(f"  ✓ TEST MODE: Would clear gnomAD data")
+                        cleared_count += 1
                 continue
             
             # Check if variant exists in gnomAD
             variant_data = data.get('data', {}).get('variant')
             if not variant_data:
-                logger.info(f"Variant {chrom}:{pos} {ref}>{alt} not found in gnomAD")
+                logger.info(f"  → Not found in gnomAD")
                 not_found_count += 1
+                
+                # Clear existing gnomAD data if clear_not_found flag is set
+                if clear_not_found and overwrite_all and pd.notna(row.get('gnomad_all')):
+                    logger.info(f"  → Clearing existing gnomAD frequencies")
+                    if not test_mode:
+                        update_url = f"{lead_url}/variant/{db_variant_id}"
+                        clear_data = {pop: None for pop in gnomad_populations}
+                        update_response = session.patch(update_url, json=clear_data)
+                        update_response.raise_for_status()
+                        logger.info(f"  ✓ Cleared gnomAD data in database")
+                        cleared_count += 1
+                    else:
+                        logger.info(f"  ✓ TEST MODE: Would clear gnomAD data")
+                        cleared_count += 1
                 continue
             
             # Extract gnomAD frequencies from GraphQL response
             genome_data = variant_data.get('genome')
             if not genome_data:
-                logger.info(f"Variant {chrom}:{pos} {ref}>{alt} found but no genome data available")
+                logger.info(f"  → Found but no genome data available")
                 not_found_count += 1
+                
+                # Clear existing gnomAD data if clear_not_found flag is set
+                if clear_not_found and overwrite_all and pd.notna(row.get('gnomad_all')):
+                    logger.info(f"  → Clearing existing gnomAD frequencies")
+                    if not test_mode:
+                        update_url = f"{lead_url}/variant/{db_variant_id}"
+                        clear_data = {pop: None for pop in gnomad_populations}
+                        update_response = session.patch(update_url, json=clear_data)
+                        update_response.raise_for_status()
+                        logger.info(f"  ✓ Cleared gnomAD data in database")
+                        cleared_count += 1
+                    else:
+                        logger.info(f"  ✓ TEST MODE: Would clear gnomAD data")
+                        cleared_count += 1
                 continue
             populations = genome_data.get('populations', [])
             
             # Calculate MAF for each population from AC/AN (allele count / allele number)
             pop_mafs = {}
-            logger.debug(f"Available populations: {[pop['id'] for pop in populations]}")
             
             for pop in populations:
                 ac = pop.get('ac')
@@ -214,18 +265,15 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
                 if ac is not None and an is not None and an > 0:
                     af = ac / an
                     pop_mafs[pop_id] = calculate_maf(af)
-                    logger.debug(f"Population {pop_id}: AF={af:.6f}, MAF={pop_mafs[pop_id]:.6f}")
                 else:
                     pop_mafs[pop_id] = None
-                    logger.debug(f"Population {pop_id}: No data (AC={ac}, AN={an})")
             
             # Calculate MAF for overall frequency
             overall_af = genome_data.get('af')
             overall_maf = calculate_maf(overall_af)
-            logger.debug(f"Overall: AF={overall_af}, MAF={overall_maf}")
             
             # Map gnomAD population IDs to database fields
-            # Note: gnomAD v4 may use 'remaining' instead of 'oth' for "Other" population
+            # Note: gnomAD v4 uses 'remaining' for "Other" population
             gnomad_freqs = {
                 'gnomad_all': overall_maf,
                 'gnomad_afr': pop_mafs.get('afr'),
@@ -234,37 +282,38 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
                 'gnomad_eas': pop_mafs.get('eas'),
                 'gnomad_fin': pop_mafs.get('fin'),
                 'gnomad_nfe': pop_mafs.get('nfe'),
-                'gnomad_oth': pop_mafs.get('remaining', pop_mafs.get('oth')),  # gnomAD v4 uses 'remaining'
+                'gnomad_oth': pop_mafs.get('remaining') or pop_mafs.get('oth'),  # gnomAD v4 uses 'remaining'
                 'gnomad_sas': pop_mafs.get('sas')
             }
             
-            # Log which fields are None to help debug population mapping
-            null_fields = [k for k, v in gnomad_freqs.items() if v is None]
-            if null_fields:
-                logger.info(f"Variant {chrom}:{pos} - Null fields: {null_fields}")
-                logger.info(f"Available gnomAD populations: {list(pop_mafs.keys())}")
-            
-            logger.info(f"Found gnomAD MAF for {chrom}:{pos} {ref}>{alt}")
+            logger.info(f"  ✓ Found in gnomAD (MAF: {overall_maf:.6f})")
             
             # Update database with PATCH request (only gnomAD fields)
             if not test_mode:
                 update_url = f"{lead_url}/variant/{db_variant_id}"
                 update_response = session.patch(update_url, json=gnomad_freqs)
                 update_response.raise_for_status()
-                logger.info(f"Successfully updated variant {db_variant_id} in database")
+                logger.info(f"  ✓ Updated in database")
                 updated_count += 1
             else:
-                logger.info(f"TEST MODE: Would update variant {db_variant_id} with: {gnomad_freqs}")
+                logger.info(f"  ✓ TEST MODE: Would update with MAF data")
                 updated_count += 1
             
-            # Rate limiting: be respectful to gnomAD API
-            time.sleep(0.5)
-            
+        except requests.exceptions.Timeout:
+            logger.error(f"  ✗ Timeout (30s)")
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error processing variant {chrom}:{pos} {ref}>{alt}: {str(e)}")
-            continue
+            logger.error(f"  ✗ API Error: {str(e)[:100]}")
+        
+        # Rate limiting: gnomAD allows 10 requests per 60 seconds, so wait 6.5 seconds between requests
+        # This runs for ALL requests (success or failure) since failed requests also count against the limit
+        time.sleep(6.5)
 
-    logger.info(f"Summary: {updated_count} variants updated, {skipped_count} skipped (already have data), {not_found_count} not found in gnomAD")
+    logger.info("=" * 80)
+    summary = f"Summary: {updated_count} variants updated, {skipped_count} skipped (already have data), {not_found_count} not found in gnomAD"
+    if clear_not_found and cleared_count > 0:
+        summary += f", {cleared_count} gnomAD records cleared"
+    logger.info(summary)
+    logger.info("=" * 80)
     
     return variants
 
@@ -287,6 +336,9 @@ Examples:
   # Overwrite all existing gnomAD values
   python annotate_gnomad.py --overwrite-all
   
+  # Clear gnomAD data that can't be found (requires --overwrite-all)
+  python annotate_gnomad.py --overwrite-all --clear-not-found
+  
   # Test overwrite mode
   python annotate_gnomad.py --test-mode --overwrite-all
         """
@@ -300,6 +352,11 @@ Examples:
         '--overwrite-all',
         action='store_true',
         help='Update all variants, even those with existing gnomAD frequencies'
+    )
+    parser.add_argument(
+        '--clear-not-found',
+        action='store_true',
+        help='Clear existing gnomAD data when not found in gnomAD (only works with --overwrite-all)'
     )
     parser.add_argument(
         '--limit',
@@ -357,8 +414,11 @@ Examples:
         logger.info(f"Mode: {'TEST MODE (no updates)' if args.test_mode else 'PRODUCTION MODE (will update database)'}")
         logger.info(f"Overwrite existing: {'YES' if args.overwrite_all else 'NO (only update variants without gnomAD data)'}")
         
+        logger.info(f"Connecting to: {lead_url}")
         session = login(lead_url, email, password)
-        variants = get_variants(session=session)
+        
+        logger.info("Fetching variants from database...")
+        variants = get_variants(lead_url, session)
         
         logger.info(f"Fetched {len(variants)} variants from database")
         
@@ -390,6 +450,4 @@ Examples:
             
     except Exception as e:
         logger.error(f"Fatal error in main process: {str(e)}")
-        raise    
-
-    
+        raise

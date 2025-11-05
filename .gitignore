@@ -1,5 +1,6 @@
 # Configuration files with credentials
 config.json
+.python-version
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
