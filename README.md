@@ -99,6 +99,7 @@ Annotates variants with exon and intron numbers using HGVS transcript coordinate
 - Handles ranges when variants span multiple exons/introns (e.g., "5-6")
 - Test mode for dry-run without database updates
 - Optional overwrite mode to update all variants (default: only update variants without exon/intron data)
+- Optional clear mode to remove exon/intron data that can't be found in VariantValidator
 - Configurable processing limit for testing
 - Rate-limited to 4 requests per second (VariantValidator recommendation)
 - Automatic retry with exponential backoff for failed requests
@@ -114,6 +115,9 @@ python annotate_exons.py
 
 # Update all variants, even those with existing exon/intron data
 python annotate_exons.py --overwrite-all
+
+# Clear exon/intron that can't be found in VariantValidator (requires --overwrite-all)
+python annotate_exons.py --overwrite-all --clear-not-found
 
 # Test with first 10 variants
 python annotate_exons.py --test-mode --limit 10
@@ -265,13 +269,20 @@ If you encounter timeout errors:
 
 ### Clearing Invalid Data
 
-Use the `--clear-not-found` flag with `--overwrite-all` to remove rsIDs that can't be found:
+Use the `--clear-not-found` flag with `--overwrite-all` to remove data that can't be found in external databases:
 
 ```bash
+# Clear rsIDs that can't be found in dbSNP
 python annotate_rsid.py --overwrite-all --clear-not-found
+
+# Clear gnomAD frequencies that can't be found
+python annotate_gnomad.py --overwrite-all --clear-not-found
+
+# Clear exon/intron data that can't be found in VariantValidator
+python annotate_exons.py --overwrite-all --clear-not-found
 ```
 
-This is useful for cleaning up outdated or incorrect rsIDs in the database.
+This is useful for cleaning up outdated or incorrect annotations in the database.
 
 ## Development
 

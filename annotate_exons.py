@@ -73,7 +73,7 @@ def get_variants(lead_url, session):
         raise
 
 
-def annotate_exons_introns(variants, session, lead_url, test_mode=True, overwrite_all=False):
+def annotate_exons_introns(variants, session, lead_url, test_mode=True, overwrite_all=False, clear_not_found=False):
     """
     Annotate variants with exon and intron numbers from VariantValidator.
 
@@ -82,11 +82,13 @@ def annotate_exons_introns(variants, session, lead_url, test_mode=True, overwrit
     :param lead_url: Base URL of the API
     :param test_mode: If True, logs what would be updated without making PATCH requests
     :param overwrite_all: If True, update all variants; if False, only update variants without exon/intron data
+    :param clear_not_found: If True, clear existing exon/intron when not found in VariantValidator (only with overwrite_all)
     :return: Updated variants DataFrame
     """
     updated_count = 0
     skipped_count = 0
     not_found_count = 0
+    cleared_count = 0
     
     for idx, row in variants.iterrows():
         # Get variant ID and HGVS transcript
@@ -127,6 +129,20 @@ def annotate_exons_introns(variants, session, lead_url, test_mode=True, overwrit
             if response.status_code != 200:
                 logger.info(f"  → Not found in VariantValidator (status {response.status_code})")
                 not_found_count += 1
+                
+                # Clear existing exon/intron if clear_not_found flag is set
+                if clear_not_found and overwrite_all and (current_exon or current_intron):
+                    logger.info(f"  → Clearing existing exon/intron: {current_exon}/{current_intron}")
+                    if not test_mode:
+                        update_url = f"{lead_url}/variant/{db_variant_id}"
+                        clear_data = {"exon": None, "intron": None}
+                        update_response = session.patch(update_url, json=clear_data, timeout=10)
+                        update_response.raise_for_status()
+                        logger.info(f"  ✓ Cleared exon/intron in database")
+                        cleared_count += 1
+                    else:
+                        logger.info(f"  ✓ TEST MODE: Would clear exon/intron")
+                        cleared_count += 1
                 continue
             
             response_data = response.json()
@@ -134,6 +150,20 @@ def annotate_exons_introns(variants, session, lead_url, test_mode=True, overwrit
             if hgvs_transcript not in response_data:
                 logger.info(f"  → HGVS transcript not in response")
                 not_found_count += 1
+                
+                # Clear existing exon/intron if clear_not_found flag is set
+                if clear_not_found and overwrite_all and (current_exon or current_intron):
+                    logger.info(f"  → Clearing existing exon/intron: {current_exon}/{current_intron}")
+                    if not test_mode:
+                        update_url = f"{lead_url}/variant/{db_variant_id}"
+                        clear_data = {"exon": None, "intron": None}
+                        update_response = session.patch(update_url, json=clear_data, timeout=10)
+                        update_response.raise_for_status()
+                        logger.info(f"  ✓ Cleared exon/intron in database")
+                        cleared_count += 1
+                    else:
+                        logger.info(f"  ✓ TEST MODE: Would clear exon/intron")
+                        cleared_count += 1
                 continue
             
             variant_data = response_data[hgvs_transcript]
@@ -142,6 +172,20 @@ def annotate_exons_introns(variants, session, lead_url, test_mode=True, overwrit
             if not variant_exonic_positions:
                 logger.info(f"  → No exonic positions found")
                 not_found_count += 1
+                
+                # Clear existing exon/intron if clear_not_found flag is set
+                if clear_not_found and overwrite_all and (current_exon or current_intron):
+                    logger.info(f"  → Clearing existing exon/intron: {current_exon}/{current_intron}")
+                    if not test_mode:
+                        update_url = f"{lead_url}/variant/{db_variant_id}"
+                        clear_data = {"exon": None, "intron": None}
+                        update_response = session.patch(update_url, json=clear_data, timeout=10)
+                        update_response.raise_for_status()
+                        logger.info(f"  ✓ Cleared exon/intron in database")
+                        cleared_count += 1
+                    else:
+                        logger.info(f"  ✓ TEST MODE: Would clear exon/intron")
+                        cleared_count += 1
                 continue
             
             # Get the latest GRCh38 version (highest NC_*.{version})
@@ -185,6 +229,20 @@ def annotate_exons_introns(variants, session, lead_url, test_mode=True, overwrit
             if not new_exon_value and not new_intron_value:
                 logger.info(f"  → No exon or intron data found")
                 not_found_count += 1
+                
+                # Clear existing exon/intron if clear_not_found flag is set
+                if clear_not_found and overwrite_all and (current_exon or current_intron):
+                    logger.info(f"  → Clearing existing exon/intron: {current_exon}/{current_intron}")
+                    if not test_mode:
+                        update_url = f"{lead_url}/variant/{db_variant_id}"
+                        clear_data = {"exon": None, "intron": None}
+                        update_response = session.patch(update_url, json=clear_data, timeout=10)
+                        update_response.raise_for_status()
+                        logger.info(f"  ✓ Cleared exon/intron in database")
+                        cleared_count += 1
+                    else:
+                        logger.info(f"  ✓ TEST MODE: Would clear exon/intron")
+                        cleared_count += 1
                 continue
             
             logger.info(f"  ✓ Found - Exon: {new_exon_value}, Intron: {new_intron_value}")
@@ -217,7 +275,10 @@ def annotate_exons_introns(variants, session, lead_url, test_mode=True, overwrit
         time.sleep(0.25)
     
     logger.info("=" * 80)
-    logger.info(f"Summary: {updated_count} variants updated, {skipped_count} skipped, {not_found_count} not found")
+    summary = f"Summary: {updated_count} variants updated, {skipped_count} skipped, {not_found_count} not found"
+    if clear_not_found and cleared_count > 0:
+        summary += f", {cleared_count} exon/intron records cleared"
+    logger.info(summary)
     logger.info("=" * 80)
     
     return variants
@@ -239,6 +300,9 @@ Examples:
   # Update all variants, even those with existing exon/intron data
   python annotate_exons.py --overwrite-all
   
+  # Clear exon/intron that can't be found in VariantValidator (requires --overwrite-all)
+  python annotate_exons.py --overwrite-all --clear-not-found
+  
   # Test with first 10 variants
   python annotate_exons.py --test-mode --limit 10
   
@@ -255,6 +319,11 @@ Examples:
         '--overwrite-all',
         action='store_true',
         help='Update all variants, even those with existing exon/intron data (default: only update variants without data)'
+    )
+    parser.add_argument(
+        '--clear-not-found',
+        action='store_true',
+        help='Clear existing exon/intron when not found in VariantValidator (only works with --overwrite-all)'
     )
     parser.add_argument(
         '--limit',
@@ -306,11 +375,19 @@ Examples:
             logger.error(f"Missing required configuration key: {e}")
             raise
 
+    # Validate flag combination
+    if args.clear_not_found and not args.overwrite_all:
+        logger.error("--clear-not-found requires --overwrite-all to be set")
+        logger.error("Use: python annotate_exons.py --overwrite-all --clear-not-found")
+        raise ValueError("--clear-not-found requires --overwrite-all")
+
     try:
         # Authenticate and fetch variants
         logger.info("Starting exon/intron annotation process")
         logger.info(f"Mode: {'TEST MODE (no updates)' if args.test_mode else 'PRODUCTION MODE (will update database)'}")
         logger.info(f"Overwrite existing: {'YES' if args.overwrite_all else 'NO (only update variants without exon/intron data)'}")
+        if args.clear_not_found:
+            logger.info(f"Clear not found: YES (will clear exon/intron not found in VariantValidator)")
         
         logger.info(f"Connecting to: {lead_url}")
         session = login(lead_url, email, password)
@@ -335,7 +412,8 @@ Examples:
             session,
             lead_url,
             test_mode=args.test_mode,
-            overwrite_all=args.overwrite_all
+            overwrite_all=args.overwrite_all,
+            clear_not_found=args.clear_not_found
         )
         
         logger.info("=" * 80)
