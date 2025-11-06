@@ -150,19 +150,26 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
             logger.warning(f"  → Missing GRCh38 coordinates, skipping")
             skipped_count += 1
             continue
+        
+        # Skip if REF or ALT alleles are too long (gnomAD API has size limits)
+        # Large variants (>1000 bp) often cause 413 Request Entity Too Large errors
+        max_allele_length = 1000
+        if len(str(ref)) > max_allele_length or len(str(alt)) > max_allele_length:
+            logger.warning(f"  → REF or ALT allele too long (REF:{len(str(ref))} bp, ALT:{len(str(alt))} bp), skipping")
+            skipped_count += 1
+            continue
 
         # gnomAD v4 GraphQL API
         gnomad_api_url = "https://gnomad.broadinstitute.org/api"
         gnomad_variant_id = f"{chrom}-{pos}-{ref}-{alt}"  # gnomAD variant ID format
         
         # GraphQL query for gnomAD v4
+        # Request only main superpopulations to keep response size manageable
         query = """
         query GnomadVariant($variantId: String!, $datasetId: DatasetId!) {
           variant(variantId: $variantId, dataset: $datasetId) {
             variant_id
             genome {
-              ac
-              an
               af
               populations {
                 id
@@ -274,6 +281,8 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
             
             # Map gnomAD population IDs to database fields
             # Note: gnomAD v4 uses 'remaining' for "Other" population
+            # Use explicit None check to preserve 0 values (0 is a valid MAF)
+            remaining_maf = pop_mafs.get('remaining')
             gnomad_freqs = {
                 'gnomad_all': overall_maf,
                 'gnomad_afr': pop_mafs.get('afr'),
@@ -282,7 +291,7 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
                 'gnomad_eas': pop_mafs.get('eas'),
                 'gnomad_fin': pop_mafs.get('fin'),
                 'gnomad_nfe': pop_mafs.get('nfe'),
-                'gnomad_oth': pop_mafs.get('remaining') or pop_mafs.get('oth'),  # gnomAD v4 uses 'remaining'
+                'gnomad_oth': remaining_maf if remaining_maf is not None else pop_mafs.get('oth'),  # gnomAD v4 uses 'remaining'
                 'gnomad_sas': pop_mafs.get('sas')
             }
             
