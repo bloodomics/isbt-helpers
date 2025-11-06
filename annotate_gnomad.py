@@ -163,12 +163,21 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
         gnomad_api_url = "https://gnomad.broadinstitute.org/api"
         gnomad_variant_id = f"{chrom}-{pos}-{ref}-{alt}"  # gnomAD variant ID format
         
-        # GraphQL query for gnomAD v4
-        # Request only main superpopulations to keep response size manageable
+        # GraphQL query for gnomAD v4.1
+        # Query both exome and genome data - will combine/prioritize as needed
+        # Many coding variants are exome-only, which are reliable for blood group genes
         query = """
         query GnomadVariant($variantId: String!, $datasetId: DatasetId!) {
           variant(variantId: $variantId, dataset: $datasetId) {
             variant_id
+            exome {
+              af
+              populations {
+                id
+                ac
+                an
+              }
+            }
             genome {
               af
               populations {
@@ -239,10 +248,13 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
                         cleared_count += 1
                 continue
             
-            # Extract gnomAD frequencies from GraphQL response
+            # Extract exome and genome data from GraphQL response
+            exome_data = variant_data.get('exome')
             genome_data = variant_data.get('genome')
-            if not genome_data:
-                logger.info(f"  → Found but no genome data available")
+            
+            # Check if we have any data (exome or genome)
+            if not exome_data and not genome_data:
+                logger.info(f"  → Found but no exome or genome data available")
                 not_found_count += 1
                 
                 # Clear existing gnomAD data if clear_not_found flag is set
@@ -259,24 +271,66 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
                         logger.info(f"  ✓ TEST MODE: Would clear gnomAD data")
                         cleared_count += 1
                 continue
-            populations = genome_data.get('populations', [])
             
-            # Calculate MAF for each population from AC/AN (allele count / allele number)
+            # Determine data source for logging
+            data_source = []
+            if exome_data:
+                data_source.append('exome')
+            if genome_data:
+                data_source.append('genome')
+            data_source_str = '+'.join(data_source)
+            
+            # Combine populations from both exome and genome
+            # gnomAD v4.1 provides joint allele numbers - when variant is in both datasets,
+            # we calculate combined frequencies by summing AC and AN across both
+            combined_pops = {}
+            
+            # Process exome populations
+            if exome_data:
+                for pop in exome_data.get('populations', []):
+                    pop_id = pop['id']
+                    # Skip sex-specific and sub-population variants (those with ':' or '_XX'/'_XY')
+                    if ':' in pop_id or '_XX' in pop_id or '_XY' in pop_id:
+                        continue
+                    ac = pop.get('ac', 0)
+                    an = pop.get('an', 0)
+                    if pop_id not in combined_pops:
+                        combined_pops[pop_id] = {'ac': 0, 'an': 0}
+                    combined_pops[pop_id]['ac'] += ac
+                    combined_pops[pop_id]['an'] += an
+            
+            # Process genome populations
+            if genome_data:
+                for pop in genome_data.get('populations', []):
+                    pop_id = pop['id']
+                    # Skip sex-specific and sub-population variants
+                    if ':' in pop_id or '_XX' in pop_id or '_XY' in pop_id:
+                        continue
+                    ac = pop.get('ac', 0)
+                    an = pop.get('an', 0)
+                    if pop_id not in combined_pops:
+                        combined_pops[pop_id] = {'ac': 0, 'an': 0}
+                    combined_pops[pop_id]['ac'] += ac
+                    combined_pops[pop_id]['an'] += an
+            
+            # Calculate MAF for each population from combined AC/AN
+            # This gives us joint exome+genome frequencies as recommended by gnomAD v4.1
             pop_mafs = {}
-            
-            for pop in populations:
-                ac = pop.get('ac')
-                an = pop.get('an')
-                pop_id = pop['id']
+            for pop_id, counts in combined_pops.items():
+                ac = counts['ac']
+                an = counts['an']
                 
-                if ac is not None and an is not None and an > 0:
+                if an > 0:
                     af = ac / an
                     pop_mafs[pop_id] = calculate_maf(af)
                 else:
                     pop_mafs[pop_id] = None
             
-            # Calculate MAF for overall frequency
-            overall_af = genome_data.get('af')
+            # Calculate overall MAF from combined AC/AN across all populations
+            # This ensures we always use joint exome+genome frequencies
+            total_ac = sum(counts['ac'] for counts in combined_pops.values() if counts['an'] > 0)
+            total_an = sum(counts['an'] for counts in combined_pops.values() if counts['an'] > 0)
+            overall_af = total_ac / total_an if total_an > 0 else None
             overall_maf = calculate_maf(overall_af)
             
             # Map gnomAD population IDs to database fields
@@ -295,7 +349,7 @@ def annotate_gnomad_frequencies(variants, session, lead_url, test_mode=True, ove
                 'gnomad_sas': pop_mafs.get('sas')
             }
             
-            logger.info(f"  ✓ Found in gnomAD (MAF: {overall_maf:.6f})")
+            logger.info(f"  ✓ Found in gnomAD [{data_source_str}] (MAF: {overall_maf:.6f})")
             
             # Update database with PATCH request (only gnomAD fields)
             if not test_mode:
